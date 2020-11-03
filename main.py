@@ -2,7 +2,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 from uncertainties import ufloat, unumpy as unp
 from scipy.optimize import curve_fit
-from scipy.signal import find_peaks, argrelmin, argrelmax
+from scipy.signal import find_peaks
+from scipy import constants as consts
+from PIL import Image
+
+
+def deviation(val, err, lit):
+    return abs(lit - val) / err
 
 
 def linear(x, a, b):
@@ -100,15 +106,15 @@ def magnetic_field():
     _xerr = xerr[:-5]
     _yerr = yerr[:-5]
 
-    popt, pcov = curve_fit(linear, _x, _y, sigma=_yerr, absolute_sigma=True)
+    popt_rising, pcov_rising = curve_fit(linear, _x, _y, sigma=_yerr, absolute_sigma=True)
 
-    r2 = r_sq(data=_y, fit=linear(_x, *popt))
+    r2 = r_sq(data=_y, fit=linear(_x, *popt_rising))
 
     print("r2:", r2)
 
     plt.errorbar(x=_x, y=_y, xerr=_xerr, yerr=_yerr, label="rising", ls="None", color="limegreen")
     fit_x = np.linspace(min(x), max(x), 1000)
-    plt.plot(fit_x, linear(fit_x, *popt), label="rising fit", color="green")
+    plt.plot(fit_x, linear(fit_x, *popt_rising), label="rising fit", color="green")
 
     # falling current
     _x = x[-5:]
@@ -116,20 +122,23 @@ def magnetic_field():
     _xerr = xerr[-5:]
     _yerr = yerr[-5:]
 
-    popt, pcov = curve_fit(linear, _x, _y, sigma=_yerr, absolute_sigma=True)
+    popt_falling, pcov_falling = curve_fit(linear, _x, _y, sigma=_yerr, absolute_sigma=True)
 
-    r2 = r_sq(data=_y, fit=linear(_x, *popt))
+    r2 = r_sq(data=_y, fit=linear(_x, *popt_falling))
 
     print("r2:", r2)
 
     plt.errorbar(x=_x, y=_y, xerr=_xerr, yerr=_yerr, label="falling", ls="None", color="orange")
-    plt.plot(fit_x, linear(fit_x, *popt), label="falling fit", color="red")
+    plt.plot(fit_x, linear(fit_x, *popt_falling), label="falling fit", color="red")
 
     plt.title("Hysteresis Effect in the Magnetic Field")
     plt.xlabel("I / A")
     plt.ylabel("B / mT")
     plt.legend()
+    plt.savefig("figures/hysteresis.png")
     plt.show()
+
+    return popt_falling, pcov_falling
 
 
 def estimate_fwhm(x, y, yp):
@@ -254,7 +263,7 @@ def sigma_pi(filename, plot=False):
             plt.show()
 
 
-def part_1():
+def part_1(cd_wavelength, popt_b, pcov_b):
     # magnetic_field()
 
     for current in range(8, 13 + 1):
@@ -275,7 +284,7 @@ def part_1():
         sigma_data = data[1::3]
 
         # acquire orders of interference
-        k0 = 10000000
+        k0 = 1e5
         kn = k0 + len(pi_data)
         ks = np.linspace(k0, kn, len(pi_data))
 
@@ -283,6 +292,7 @@ def part_1():
         pi_xs = np.array([pi[0][4] for pi in pi_data])
         sig_xs = np.array([sig[0][4] for sig in sigma_data])
 
+        plt.figure(figsize=(10, 8))
         plt.scatter(ks, pi_xs, label="pi", marker="x")
         plt.scatter(ks, sig_xs, label="sigma", marker="x")
 
@@ -304,29 +314,190 @@ def part_1():
         Delta_a = np.poly1d(popt_pi)(1)
         delta_a = np.abs(np.poly1d(popt_sig)(1) - Delta_a)
 
-        l = 643.8e-9  # m
-        d = 4.04e-3  # m
+        print("Delta_a =", Delta_a)
+        print("delta_a =", delta_a)
+
+        d = 4.04e6  # nm
         n = 1.4567
-        Delta_lambda = l ** 2 / (2 * d * np.sqrt(n ** 2 - 1))  # m
+        Delta_lambda = cd_wavelength ** 2 / (2 * d * np.sqrt(n ** 2 - 1))  # m
         delta_lambda = delta_a / Delta_a * Delta_lambda  # m
 
-        print(f"Delta_lambda = {Delta_lambda * 1e12:.2f} pm")
-        print(f"delta_lambda = {delta_lambda * 1e12:.2f} pm")
+        print(f"Delta_lambda = {Delta_lambda * 1e3} pm")
+        print(f"delta_lambda = {delta_lambda * 1e3} pm")
 
+        # TODO
+        Delta_E = consts.h * consts.c * (1 / (cd_wavelength * 1e-9) - 1 / (cd_wavelength * 1e-9 + delta_lambda))
+
+        errors = [pcov_b[i][i] for i in range(len(popt_b))]
+        B = linear(current, *unp.uarray(popt_b, errors)) * 1e-3  # T
+
+        print("B =", B)
+
+        mu_B = Delta_E / B
+
+        print("mu_B =", mu_B)
+
+        plt.title("Sigma and Pi Peak Positions")
+        plt.xlabel("Order of Interference")
+        plt.ylabel("position / px")
         plt.legend()
+        plt.savefig(f"figures/sigma_pi_{current}A.png")
         plt.show()
 
 
+def avg_img(name, n0=1, n=5, ft="jpg"):
+    fp = "data/"
+
+    return np.average(np.array([
+        np.asarray(Image.open(f"{fp}{name}{i}.{ft}").rotate(1.2))
+        for i in range(n0, n)
+    ]), axis=0)
+
+
+def vintegrate_avg_img(name, bg_name, *args, **kwargs):
+    a = avg_img(name, *args, **kwargs) - avg_img(bg_name, *args, **kwargs)
+    return np.sum(a, axis=0).take(0, axis=1)
 
 
 def part_2():
-    pass
+
+    integrated_a = vintegrate_avg_img("a", "b")
+    integrated_cd = vintegrate_avg_img("cd a", "cd b")
+    x = np.arange(len(integrated_a))
+
+    p0s = [
+        # a, b, eta, a1, x0, gamma, a2, mu, sigma
+        [0, 0, 0.5, 3000, 10, 5, 3000, 10, 4],
+        [0, 0, 0.5, 10000, 230, 5, 10000, 230, 4],
+        [0, 0, 0.5, 37750, 1104, 5, 37750, 1104, 4],
+        [5000 / 30, -21000, 0.5, 20000, 1265, 5, 20000, 1265, 4]
+    ]
+
+    fit_lims = [
+        (0, 23),
+        (218, 241),
+        (1091, 1115),
+        (1251, 1277)
+    ]
+
+    plt.figure(figsize=(10, 8))
+    plt.plot(x, integrated_a, label="Neon")
+    # plt.plot(x, integrated_cd, label="Cadmium")
+
+    def fit_func(_x, _a, _b, *args, **kwargs):
+        return _a * _x + _b + pseudo_voigt(_x, *args, **kwargs)
+
+    positions = []
+
+    for p0, (fit_min, fit_max) in zip(p0s, fit_lims):
+        fit_x = x[fit_min:fit_max]
+        fit_y = integrated_a[fit_min:fit_max]
+
+        # in addition to the mathematical bounds, we add bounds for x0 and mu which should lie very close to xp
+        # since otherwise curve_fit will try to send one to infinity if the respective distribution has
+        # low influence on the peak which would be unphysical
+        xp = p0[4]
+        lower_bounds = [-np.inf, -np.inf, 0.0, 0.0, xp - 5, 0.0, 0.0, xp - 5, 0.0]
+        upper_bounds = [np.inf, np.inf, 1.0, np.inf, xp + 5, np.inf, np.inf, xp + 5, np.inf]
+        bounds = lower_bounds, upper_bounds
+
+        popt, pcov = curve_fit(fit_func, fit_x, fit_y, p0=p0, bounds=bounds, maxfev=10000)
+
+        eta = ufloat(popt[2], pcov[2][2])
+        x0 = ufloat(popt[4], pcov[4][4])
+        mu = ufloat(popt[7], pcov[7][7])
+        positions.append(eta * x0 + (1 - eta) * mu)
+
+        r2 = r_sq(fit_y, fit_func(fit_x, *popt))
+
+        print(r2)
+
+        fit_color = "green" if r2 > 0.995 else "orange" if r2 > 0.99 else "red"
+
+        plot_x = np.linspace(fit_min, fit_max, 1000)
+        plt.plot(plot_x, fit_func(plot_x, *popt), color=fit_color)
+
+    plt.title("Neon Line Spectrum")
+    plt.xlabel("Position / px")
+    plt.ylabel("Intensity / counts")
+    # plt.legend()
+    plt.savefig("figures/ne_spectrum.png")
+    plt.show()
+    # plt.close()
+
+    # camera was upside down during measurement, so the left side is higher wavelengths
+    lambda_neon = [653.28822, 650.65281, 640.2248, 638.29917]
+
+    popt_calibration, pcov_calibration = curve_fit(linear, unp.nominal_values(positions), lambda_neon)
+    l = linear(x, *popt_calibration)
+
+    plt.figure(figsize=(10, 8))
+    plt.plot(unp.nominal_values(positions), lambda_neon, lw=0, marker="x", label="Neon Line Data")
+
+    temp_plot_x = np.linspace(0, 1300, 10000)
+    plt.plot(temp_plot_x, linear(temp_plot_x, *popt_calibration), label="fit")
+    del temp_plot_x
+
+    plt.title("Calibration")
+    plt.xlabel("position / px")
+    plt.ylabel(r"$\lambda$ / nm")
+    plt.legend()
+    plt.savefig("figures/calibration.png")
+    plt.show()
+
+    # a, b, eta, a1, x0, gamma, a2, mu, sigma
+    p0 = [0, 0, 0.5, 36500, 802.5, 6, 36500, 802.5, 5]
+    fit_min = 750
+    fit_max = 850
+
+    fit_x = x[fit_min:fit_max]
+    fit_y = integrated_cd[fit_min:fit_max]
+
+    xp = p0[4]
+    lower_bounds = [-np.inf, -np.inf, 0.0, 0.0, xp - 5, 0.0, 0.0, xp - 5, 0.0]
+    upper_bounds = [np.inf, np.inf, 1.0, np.inf, xp + 5, np.inf, np.inf, xp + 5, np.inf]
+    bounds = lower_bounds, upper_bounds
+
+    popt, pcov = curve_fit(fit_func, fit_x, fit_y, p0=p0, bounds=bounds, maxfev=10000)
+
+    r2 = r_sq(fit_y, fit_func(fit_x, *popt))
+
+    print("r2 =", r2)
+
+    eta = ufloat(popt[2], pcov[2][2])
+    x0 = ufloat(popt[4], pcov[4][4])
+    mu = ufloat(popt[7], pcov[7][7])
+    cd_position = eta * x0 + (1 - eta) * mu
+
+    cd_wavelength = linear(cd_position, *popt_calibration)
+
+    cd_wavelength_lit = 643.8470  # nm
+
+    print("cd position =", cd_position)
+    print("cd wavelength =", cd_wavelength)
+    print("deviation:", deviation(cd_wavelength.nominal_value, cd_wavelength.std_dev, cd_wavelength_lit), "sigma")
+
+    plt.figure(figsize=(10, 8))
+    plt.plot(l, integrated_cd, label="data")
+
+    plot_x = np.linspace(fit_min, fit_max, 10000)
+    plt.plot(linear(plot_x, *popt_calibration), fit_func(plot_x, *popt), label="fit")
+
+    plt.title("Cadmium Spectrum")
+    plt.xlabel(r"$\lambda$ / nm")
+    plt.ylabel("Intensity / counts")
+    plt.xlim(643.2, 644.6)
+    plt.legend()
+    plt.savefig("figures/cd_spectrum.png")
+    plt.show()
+
+    return cd_wavelength
 
 
 def main(argv: list) -> int:
-    # test_r_sq()
-    part_1()
-    part_2()
+    popt, pcov = magnetic_field()
+    cd = part_2()
+    part_1(cd, popt, pcov)
     return 0
 
 

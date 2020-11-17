@@ -5,6 +5,7 @@ from scipy.optimize import curve_fit
 from scipy.signal import find_peaks
 from scipy import constants as consts
 from PIL import Image
+from itertools import chain
 
 
 def deviation(val, err, lit):
@@ -266,6 +267,8 @@ def sigma_pi(filename, plot=False):
 def part_1(cd_wavelength, popt_b, pcov_b):
     # magnetic_field()
 
+
+    mu_Bs = []
     for current in range(8, 13 + 1):
         print(f"=== CURRENT: {current} A ===")
         filename = "data/" + str(current) + " A.xls"
@@ -281,10 +284,12 @@ def part_1(cd_wavelength, popt_b, pcov_b):
 
         # split into sigma and pi
         pi_data = data[2::3]
-        sigma_data = data[1::3]
+        sigma_left = data[1::3]
+        sigma_right = data[3::3]
+        sigma_data = list(chain(*zip(sigma_left, sigma_right)))
 
         # acquire orders of interference
-        k0 = 1e5
+        k0 = 1e6
         kn = k0 + len(pi_data)
         ks = np.linspace(k0, kn, len(pi_data))
 
@@ -293,43 +298,42 @@ def part_1(cd_wavelength, popt_b, pcov_b):
         sig_xs = np.array([sig[0][4] for sig in sigma_data])
 
         plt.figure(figsize=(10, 8))
-        plt.scatter(ks, pi_xs, label="pi", marker="x")
-        plt.scatter(ks, sig_xs, label="sigma", marker="x")
+        # plt.scatter(ks, pi_xs, label="pi", marker="x")
+        # plt.scatter(ks, sig_xs, label="sigma", marker="x")
 
         # polynomial order, we found n = 2 to be sufficient (r^2 > 0.999)
-        n_pi = 2
-        n_sig = 2
+        n = 2
 
-        popt_pi = np.polyfit(ks, pi_xs, n_pi)
-        popt_sig = np.polyfit(ks, sig_xs, n_sig)
+        popt = np.polyfit(pi_xs, ks, n)
+        poly_func = np.poly1d(popt)
 
-        fit_x = np.linspace(ks[0], ks[-1], 1000)
+        delta_ks = []
+        for pi_x, (sig_x1, sig_x2) in zip(pi_xs, zip(sig_xs[::2], sig_xs[1::2])):
+            delta_k1 = np.abs(poly_func(sig_x1) - poly_func(pi_x))
+            delta_k2 = np.abs(poly_func(sig_x2) - poly_func(pi_x))
+            delta_ks.extend([delta_k1, delta_k2])
 
-        print("[pi]: r^2 =", r_sq(pi_xs, np.poly1d(popt_pi)(ks)))
-        print("[sig]: r^2 =", r_sq(sig_xs, np.poly1d(popt_sig)(ks)))
+        delta_k = np.mean(delta_ks)
 
-        plt.plot(fit_x, np.poly1d(popt_pi)(fit_x), label="pi fit")
-        plt.plot(fit_x, np.poly1d(popt_sig)(fit_x), label="sigma fit")
+        print("delta_ks =", delta_ks)
+        print("delta_k =", delta_k)
 
-        Delta_a = np.poly1d(popt_pi)(1)
-        delta_a = np.abs(np.poly1d(popt_sig)(1) - Delta_a)
-
-        print("Delta_a =", Delta_a)
-        print("delta_a =", delta_a)
-
-        d = 4.04e6  # nm
+        l = cd_wavelength * 1e-9  # m
+        d = 4.04e-3  # m
         n = 1.4567
-        Delta_lambda = cd_wavelength ** 2 / (2 * d * np.sqrt(n ** 2 - 1))  # m
-        delta_lambda = delta_a / Delta_a * Delta_lambda  # m
+        Delta_lambda = l ** 2 / (2 * d * np.sqrt(n ** 2 - 1))  # m
+        delta_lambda = delta_k * Delta_lambda  # m
 
-        print(f"Delta_lambda = {Delta_lambda * 1e3} pm")
-        print(f"delta_lambda = {delta_lambda * 1e3} pm")
+        # delta_lambda = 8e-12  # m
 
-        # TODO
-        Delta_E = consts.h * consts.c * (1 / (cd_wavelength * 1e-9) - 1 / (cd_wavelength * 1e-9 + delta_lambda))
+        print(f"Delta_lambda = {Delta_lambda * 1e12} pm")
+        print(f"delta_lambda = {delta_lambda * 1e12} pm")
 
-        errors = [pcov_b[i][i] for i in range(len(popt_b))]
-        B = linear(current, *unp.uarray(popt_b, errors)) * 1e-3  # T
+        Delta_E = consts.h * consts.c * (1 / l - 1 / (l + delta_lambda))
+
+        # errors = [pcov_b[i][i] for i in range(len(popt_b))]
+        # B = linear(current, *unp.uarray(popt_b, errors)) * 1e-3  # T
+        B = linear(current, *popt_b) * 1e-3  # T
 
         print("B =", B)
 
@@ -337,6 +341,12 @@ def part_1(cd_wavelength, popt_b, pcov_b):
 
         print("mu_B =", mu_B)
 
+        mu_Bs.append(mu_B)
+
+        plot_x = np.linspace(np.min(pi_xs), np.max(pi_xs), 10000)
+        plt.plot(plot_x, poly_func(plot_x), label="fit")
+        plt.plot(pi_xs, ks, lw=0, marker="x", label="pi")
+        plt.plot(sig_xs, poly_func(sig_xs), lw=0, marker="x", label="sigma")
         plt.title("Sigma and Pi Peak Positions")
         plt.xlabel("Order of Interference")
         plt.ylabel("position / px")
@@ -344,11 +354,13 @@ def part_1(cd_wavelength, popt_b, pcov_b):
         plt.savefig(f"figures/sigma_pi_{current}A.png")
         plt.show()
 
+    print("Mean mu_B =", np.mean(mu_Bs))
+
 
 def avg_img(name, n0=1, n=5, ft="jpg"):
     fp = "data/"
 
-    return np.average(np.array([
+    return np.mean(np.array([
         np.asarray(Image.open(f"{fp}{name}{i}.{ft}").rotate(1.2))
         for i in range(n0, n)
     ]), axis=0)

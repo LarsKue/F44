@@ -326,16 +326,14 @@ def part_1(cd_wavelength, popt_b, pcov_b):
         Delta_lambda = l ** 2 / (2 * d * np.sqrt(n ** 2 - 1))  # m
         delta_lambda = delta_k * Delta_lambda  # m
 
-        # delta_lambda = 8e-12  # m
-
         print(f"Delta_lambda = {Delta_lambda * 1e12} pm")
         print(f"delta_lambda = {delta_lambda * 1e12} pm")
 
         Delta_E = consts.h * consts.c * (1 / l - 1 / (l + delta_lambda))
 
-        # errors = [pcov_b[i][i] for i in range(len(popt_b))]
-        # B = linear(current, *unp.uarray(popt_b, errors)) * 1e-3  # T
-        B = linear(current, *popt_b) * 1e-3  # T
+        errors = [np.sqrt(pcov_b[i][i]) for i in range(len(popt_b))]
+        B = linear(current, *unp.uarray(popt_b, errors)) * 1e-3  # T
+        # B = linear(current, *popt_b) * 1e-3  # T
 
         print("B =", B)
 
@@ -509,9 +507,9 @@ def part_2():
 
 
 def main(argv: list) -> int:
-    popt, pcov = magnetic_field()
+    popt_b, pcov_b = magnetic_field()
     cd = part_2()
-    part_1(cd, popt, pcov)
+    part_1(cd, popt_b, pcov_b)
     return 0
 
 

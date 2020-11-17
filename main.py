@@ -291,7 +291,9 @@ def part_1(cd_wavelength, popt_b, pcov_b):
         # acquire orders of interference
         k0 = 1e6
         kn = k0 + len(pi_data)
-        ks = np.linspace(k0, kn, len(pi_data))
+        ks = np.arange(k0, kn)
+
+        print("ks =", ks)
 
         # plot orders of interference against position of pi-lines
         pi_xs = np.array([pi[0][4] for pi in pi_data])
@@ -348,8 +350,8 @@ def part_1(cd_wavelength, popt_b, pcov_b):
         plt.plot(pi_xs, ks, lw=0, marker="x", label="pi")
         plt.plot(sig_xs, poly_func(sig_xs), lw=0, marker="x", label="sigma")
         plt.title("Sigma and Pi Peak Positions")
-        plt.xlabel("Order of Interference")
-        plt.ylabel("position / px")
+        plt.ylabel("Order of Interference")
+        plt.xlabel("position / px")
         plt.legend()
         plt.savefig(f"figures/sigma_pi_{current}A.png")
         plt.show()
